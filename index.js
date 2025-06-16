@@ -1,85 +1,186 @@
-const http = require('http');
-const fs = require('fs');
+const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
-const mysql = require('mysql2/promise');
+const crypto = require('crypto');
 
+const app = express();
 const PORT = 3000;
 
-// Database connection settings
-const dbConfig = {
-    host: 'localhost',
-    user: 'root',
-    password: '',
-    database: 'todolist',
-};
-
-async function retrieveListItems() {
-    try {
-        const connection = await mysql.createConnection(dbConfig);
-        const query = 'SELECT id, text, created_at as createdAt, updated_at as updatedAt FROM items ORDER BY createdAt DESC';
-        const [rows] = await connection.execute(query);
-        await connection.end();
-        return rows;
-    } catch (error) {
-        console.error('Error retrieving list items:', error);
-        throw error;
-    }
-}
-
-async function getHtmlRows() {
-    const todoItems = await retrieveListItems();
-
-    return todoItems.map((item, index) => `
-        <tr>
-            <td>${index + 1}</td>
-            <td>${item.text}</td>
-            <td>
-                <button onclick="startEdit(${index})">Edit</button>
-                <button onclick="removeItem(${index})">Remove</button>
-            </td>
-        </tr>
-    `).join('');
-}
-
-async function handleRequest(req, res) {
-    if (req.url === '/') {
-        try {
-            const html = await fs.promises.readFile(
-                path.join(__dirname, 'index.html'), 
-                'utf8'
-            );
-            
-            // Полностью заменяем tbody содержимым
-            const processedHtml = html.replace(
-                '<tbody id="listBody">\n        <br />\n    </tbody>',
-                `<tbody id="listBody">\n        ${await getHtmlRows()}\n    </tbody>`
-            );
-            
-            res.writeHead(200, { 'Content-Type': 'text/html' });
-            res.end(processedHtml);
-        } catch (err) {
-            console.error(err);
-            res.writeHead(500, { 'Content-Type': 'text/plain' });
-            res.end('Error loading index.html');
-        }
-    } else if (req.url === '/script.js') {
-        try {
-            const script = await fs.promises.readFile(
-                path.join(__dirname, 'script.js'), 
-                'utf8'
-            );
-            res.writeHead(200, { 'Content-Type': 'application/javascript' });
-            res.end(script);
-        } catch (err) {
-            console.error(err);
-            res.writeHead(500, { 'Content-Type': 'text/plain' });
-            res.end('Error loading script.js');
-        }
+// Инициализация базы данных
+const db = new sqlite3.Database('./database.sqlite', (err) => {
+    if (err) {
+        console.error('❌ Ошибка подключения к SQLite:', err);
     } else {
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
-        res.end('Route not found');
+        console.log('✅ Подключено к SQLite');
+        initializeDatabase();
     }
+});
+
+function initializeDatabase() {
+    db.run(`
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL
+        );
+    `);
+
+    db.run(`
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            task_text TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+    `);
 }
 
-const server = http.createServer(handleRequest);
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// Middleware
+app.use(bodyParser.json());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type']
+}));
+app.use(express.static('public'));
+
+// Хеширование пароля
+function hashPassword(password) {
+    return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+// Регистрация
+app.post('/api/register', (req, res) => {
+    const { username, password } = req.body;
+    
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Username and password are required' });
+    }
+
+    db.get('SELECT id FROM users WHERE username = ?', [username], (err, row) => {
+        if (err) {
+            return res.status(500).json({ error: 'Database error' });
+        }
+        if (row) {
+            return res.status(400).json({ error: 'Username already exists' });
+        }
+
+        const passwordHash = hashPassword(password);
+        db.run('INSERT INTO users (username, password_hash) VALUES (?, ?)', 
+            [username, passwordHash], 
+            function(err) {
+                if (err) {
+                    return res.status(500).json({ error: 'Registration failed' });
+                }
+                res.json({ status: 'success', userId: this.lastID });
+            }
+        );
+    });
+});
+
+// Вход
+app.post('/api/login', (req, res) => {
+    const { username, password } = req.body;
+    
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Username and password are required' });
+    }
+
+    const passwordHash = hashPassword(password);
+    db.get('SELECT id FROM users WHERE username = ? AND password_hash = ?', 
+        [username, passwordHash], 
+        (err, row) => {
+            if (err) {
+                return res.status(500).json({ error: 'Database error' });
+            }
+            if (!row) {
+                return res.status(401).json({ error: 'Invalid credentials' });
+            }
+            res.json({ status: 'success', userId: row.id });
+        }
+    );
+});
+
+// Получение задач
+app.get('/api/todos/:userId', (req, res) => {
+    const userId = req.params.userId;
+    
+    db.all('SELECT id, task_text FROM tasks WHERE user_id = ?', 
+        [userId], 
+        (err, rows) => {
+            if (err) {
+                return res.status(500).json({ error: 'Database error' });
+            }
+            res.json(rows.map(row => ({ id: row.id, text: row.task_text })));
+        }
+    );
+});
+
+// Добавление задачи
+app.post('/api/todos/:userId', (req, res) => {
+    console.log('Adding task for user:', req.params.userId, 'Text:', req.body.task_text);
+    const userId = req.params.userId;
+    const { task_text } = req.body;
+    
+    if (!task_text) {
+        return res.status(400).json({ error: 'Task text is required' });
+    }
+
+    db.run('INSERT INTO tasks (user_id, task_text) VALUES (?, ?)', 
+        [userId, task_text], 
+        function(err) {
+            if (err) {
+                return res.status(500).json({ error: 'Failed to add task' });
+            }
+            res.json({ status: 'success', taskId: this.lastID });
+        }
+    );
+});
+
+// Удаление задачи
+app.delete('/api/todos/:userId/:taskId', (req, res) => {
+    const { userId, taskId } = req.params;
+    
+    db.run('DELETE FROM tasks WHERE id = ? AND user_id = ?', 
+        [taskId, userId], 
+        function(err) {
+            if (err) {
+                return res.status(500).json({ error: 'Failed to delete task' });
+            }
+            if (this.changes === 0) {
+                return res.status(404).json({ error: 'Task not found' });
+            }
+            res.json({ status: 'success' });
+        }
+    );
+});
+
+// Обновление задачи
+app.put('/api/todos/:userId/:taskId', (req, res) => {
+    const { userId, taskId } = req.params;
+    const { task_text } = req.body;
+    
+    if (!task_text) {
+        return res.status(400).json({ error: 'Task text is required' });
+    }
+
+    db.run('UPDATE tasks SET task_text = ? WHERE id = ? AND user_id = ?', 
+        [task_text, taskId, userId], 
+        function(err) {
+            if (err) {
+                return res.status(500).json({ error: 'Failed to update task' });
+            }
+            if (this.changes === 0) {
+                return res.status(404).json({ error: 'Task not found' });
+            }
+            res.json({ status: 'success' });
+        }
+    );
+});
+
+// Запуск сервера
+app.listen(PORT, () => {
+    console.log(`Сервер запущен на http://localhost:${PORT}`);
+});

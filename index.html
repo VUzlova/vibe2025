@@ -1,180 +1,241 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>To-Do List</title>
+    <title>To-Do List App</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-        }
-        #todoList {
-            border-collapse: collapse;
-            width: 70%;
+            max-width: 600px;
             margin: 0 auto;
+            padding: 20px;
         }
-        #todoList th, #todoList td {
+        .login-section, .todo-section {
+            margin-bottom: 20px;
+        }
+        input, button {
+            padding: 8px;
+            margin: 5px 0;
+        }
+        button {
+            cursor: pointer;
+        }
+        #task-list {
+            list-style: none;
+            padding: 0;
+        }
+        .task-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
             border: 1px solid #ddd;
-            padding: 8px;
-            text-align: left;
+            margin-bottom: 5px;
         }
-        #todoList th {
-            background-color: #f0f0f0;
-        }
-        #todoList th:first-child, #todoList th:last-child {
-            width: 5%;
-        }
-        #todoList th:nth-child(2) {
-            width: 80%;
-        }
-        #todoList th:nth-child(3) {
-            width: 15%;
-        }
-        .add-form {
-            margin-top: 20px;
-            width: 70%;
-            margin: 20px auto;
-        }
-        .add-form input[type="text"] {
-            padding: 8px;
-            width: 70%;
-        }
-        .add-form button {
-            padding: 8px;
-            width: 20%;
-        }
-        .edit-input {
-            width: 100%;
-            padding: 5px;
-            box-sizing: border-box;
+        .task-actions button {
+            margin-left: 5px;
         }
     </style>
 </head>
 <body>
+    <div class="login-section" id="loginSection">
+        <h2>Авторизация</h2>
+        <input type="text" id="username" placeholder="Логин" required>
+        <input type="password" id="password" placeholder="Пароль" required>
+        <button id="loginBtn">Войти</button>
+        <button id="registerBtn">Зарегистрироваться</button>
+    </div>
 
-<h2 style="text-align: center;">To-Do List</h2>
+    <div class="todo-section" id="todoApp" style="display: none;">
+        <h1>Мой To-Do List</h1>
+        <div>
+            <input type="text" id="new-task" placeholder="Новая задача">
+            <button id="add-task">Добавить</button>
+        </div>
+        <ul id="task-list"></ul>
+    </div>
 
-<table id="todoList">
-    <thead>
-        <tr>
-            <th>Number</th>
-            <th>Text</th>
-            <th>Action</th>
-        </tr>
-    </thead>
-    <tbody id="listBody">
-        <br />
-    </tbody>
-</table>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const loginSection = document.getElementById('loginSection');
+            const todoApp = document.getElementById('todoApp');
+            const loginBtn = document.getElementById('loginBtn');
+            const registerBtn = document.getElementById('registerBtn');
+            const usernameInput = document.getElementById('username');
+            const passwordInput = document.getElementById('password');
+            const addTaskBtn = document.getElementById('add-task');
+            const newTaskInput = document.getElementById('new-task');
+            const taskList = document.getElementById('task-list');
+            
+            let currentUser = null;
+            let tasks = [];
 
-<div class="add-form">
-    <input type="text" id="newItem" placeholder="Enter new item">
-    <button onclick="addItem()">Add</button>
-</div>
+            // Обработчики кнопок
+            loginBtn.addEventListener('click', handleLogin);
+            registerBtn.addEventListener('click', handleRegister);
+            addTaskBtn.addEventListener('click', addTask);
+            newTaskInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') addTask();
+            });
 
-<script>
-    let items = [];
-    let nextId = 1;
+            async function handleLogin() {
+                try {
+                    const response = await fetch('/api/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            username: usernameInput.value.trim(),
+                            password: passwordInput.value.trim()
+                        })
+                    });
 
-    function renderList() {
-        const listBody = document.getElementById('listBody');
-        listBody.innerHTML = '';
+                    const data = await response.json();
+                    
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Login failed');
+                    }
 
-        items.forEach((item, index) => {
-            const row = document.createElement('tr');
-            row.innerHTML = `
-                <td>${index + 1}</td>
-                <td>${item.text}</td>
-                <td>
-                    <button onclick="startEdit(${index})">Edit</button>
-                    <button onclick="removeItem(${index})">Remove</button>
-                </td>
-            `;
-            listBody.appendChild(row);
+                    currentUser = { 
+                        userId: data.userId,
+                        username: usernameInput.value.trim()
+                    };
+                    loginSection.style.display = 'none';
+                    todoApp.style.display = 'block';
+                    await loadTasks();
+                } catch (error) {
+                    console.error('Login error:', error);
+                    alert(error.message);
+                }
+            }
+
+            async function handleRegister() {
+                try {
+                    const response = await fetch('/api/register', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            username: usernameInput.value.trim(),
+                            password: passwordInput.value.trim()
+                        })
+                    });
+
+                    const data = await response.json();
+                    
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Registration failed');
+                    }
+
+                    alert('Registration successful! You can now login.');
+                } catch (error) {
+                    console.error('Registration error:', error);
+                    alert(error.message);
+                }
+            }
+
+            function renderTasks() {
+                taskList.innerHTML = '';
+                tasks.forEach((task, index) => {
+                    const li = document.createElement('li');
+                    li.className = 'task-item';
+                    li.innerHTML = `
+                        <span>${task.text}</span>
+                        <div class="task-actions">
+                            <button class="edit-btn" data-id="${task.id}">✏️</button>
+                            <button class="delete-btn" data-id="${task.id}">🗑️</button>
+                        </div>
+                    `;
+                    taskList.appendChild(li);
+                });
+
+                document.querySelectorAll('.delete-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        deleteTask(e.target.getAttribute('data-id'));
+                    });
+                });
+
+                document.querySelectorAll('.edit-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        startEdit(e.target.getAttribute('data-id'));
+                    });
+                });
+            }
+
+            async function addTask() {
+                const taskText = newTaskInput.value.trim();
+                if (!taskText) return;
+
+                try {
+                    const response = await fetch(`/api/todos/${currentUser.userId}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ task_text: taskText })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to add task');
+                    }
+
+                    newTaskInput.value = '';
+                    await loadTasks();
+                    alert('Задача успешно добавлена!');
+                  } catch (error) {
+                    console.error('Error adding task:', error);
+                    alert('Ошибка: ' + error.message);
+                }
+            }
+
+            async function deleteTask(taskId) {
+                try {
+                    const response = await fetch(`/api/todos/${currentUser.userId}/${taskId}`, {
+                        method: 'DELETE'
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to delete task');
+                    }
+
+                    await loadTasks();
+                } catch (error) {
+                    console.error('Error deleting task:', error);
+                    alert('Failed to delete task');
+                }
+            }
+
+            async function startEdit(taskId) {
+                const newText = prompt('Введите новый текст задачи:');
+                if (newText === null || newText.trim() === '') return;
+
+                try {
+                    const response = await fetch(`/api/todos/${currentUser.userId}/${taskId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ task_text: newText.trim() })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to update task');
+                    }
+
+                    await loadTasks();
+                } catch (error) {
+                    console.error('Error updating task:', error);
+                    alert('Failed to update task');
+                }
+            }
+
+            async function loadTasks() {
+                try {
+                    const response = await fetch(`/api/todos/${currentUser.userId}`);
+                    if (!response.ok) throw new Error('Failed to load tasks');
+                    tasks = await response.json();
+                    renderTasks();
+                } catch (error) {
+                    console.error('Error loading tasks:', error);
+                    alert('Failed to load tasks');
+                }
+            }
         });
-    }
-
-    function addItem() {
-        const newItemInput = document.getElementById('newItem');
-        const newItemText = newItemInput.value.trim();
-
-        if (!newItemText) {
-            alert("Please enter a task!");
-            return;
-        }
-
-        if (items.some(item => item.text.toLowerCase() === newItemText.toLowerCase())) {
-            alert("This task already exists in the list!");
-            return;
-        }
-
-        items.push({ 
-            id: nextId++, 
-            text: newItemText,
-            createdAt: new Date()
-        });
-
-        newItemInput.value = '';
-        newItemInput.focus();
-        renderList();
-    }
-
-    function startEdit(index) {
-        const listBody = document.getElementById('listBody');
-        const rows = listBody.getElementsByTagName('tr');
-        const currentRow = rows[index];
-        const currentText = items[index].text;
-
-        currentRow.innerHTML = `
-            <td>${index + 1}</td>
-            <td><input type="text" class="edit-input" value="${currentText}"></td>
-            <td>
-                <button onclick="saveEdit(${index})">Save</button>
-                <button onclick="cancelEdit(${index})">Cancel</button>
-            </td>
-        `;
-
-        // Установить фокус на поле ввода
-        currentRow.querySelector('.edit-input').focus();
-    }
-
-    function saveEdit(index) {
-        const listBody = document.getElementById('listBody');
-        const rows = listBody.getElementsByTagName('tr');
-        const currentRow = rows[index];
-        const newText = currentRow.querySelector('.edit-input').value.trim();
-
-        if (!newText) {
-            alert("Task cannot be empty!");
-            return;
-        }
-
-        // Проверяем, не дублируется ли задача (кроме текущей редактируемой)
-        const duplicate = items.some((item, i) => 
-            i !== index && item.text.toLowerCase() === newText.toLowerCase()
-        );
-
-        if (duplicate) {
-            alert("This task already exists in the list!");
-            return;
-        }
-
-        items[index].text = newText;
-        items[index].updatedAt = new Date(); // Добавляем время обновления
-        renderList();
-    }
-
-    function cancelEdit(index) {
-        renderList(); // Просто перерисовываем список без изменений
-    }
-
-    function removeItem(index) {
-        if (confirm("Are you sure you want to delete this task?")) {
-            items.splice(index, 1);
-            renderList();
-        }
-    }
-</script>
-
+    </script>
 </body>
 </html>
